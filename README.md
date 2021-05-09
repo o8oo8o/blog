@@ -44,6 +44,18 @@ MySQL + Redis
 ### install.txt 是部署参考说明
 
 ---
+### 演示截图
+![avatar](./img/a.png)
+![avatar](./img/b.png)
+![avatar](./img/c.png)
+![avatar](./img/d.png)
+![avatar](./img/e.png)
+![avatar](./img/f.png)
+![avatar](./img/g.png)
+![avatar](./img/h.png)
+![avatar](./img/i.png)
+
+---
 完整目录结构如下：
 ```
 .
