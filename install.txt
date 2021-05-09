@@ -1,0 +1,321 @@
+
+# 暂时关闭selinux
+setenforce 0
+
+# 永久关闭selinux
+sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
+sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/sysconfig/selinux
+
+
+# 调整防火墙,使用阿里云自己的
+firewall-cmd --permanent --add-port=0-65535/tcp
+firewall-cmd --permanent --add-port=0-65535/udp
+firewall-cmd --reload
+
+
+# 如果启用SELinux需要
+setsebool -P httpd_can_network_connect 1
+semanage port -a -t kerberos_port_t -p tcp 8899
+restorecon -Rv /usr/share/nginx/html/
+
+# 安装软件包
+yum -y install bash-completion vim tree unzip lsof wget expect lrzsz gcc bzip2 patch python38 git nginx mysql-server redis nodejs
+
+# 设置Pip阿里云源
+mkdir ~/.pip
+cat >  ~/.pip/pip.conf << end
+[list]
+format=columns
+[global] 
+index-url = https://mirrors.aliyun.com/pypi/simple/
+[install]
+trusted-host = mirrors.aliyun.com
+end
+
+# 安装使用到的python库
+pip3.8 install Tornado
+
+pip3.8 install Sqlalchemy
+
+pip3.8 install Pillow
+
+pip3.8 install paramiko
+
+pip3.8 install pymysql
+
+pip3.8 install redis
+
+pip3.8 install psutil
+
+
+cd /opt/
+# 下载代码
+git clone https://github.com/o8oo8o/blog.git
+
+
+# 编译前台代码
+cd /opt/
+cd blog/frontend/blog/
+npm install
+npm run build
+
+# 编译管理后台代码
+cd /opt/
+cd blog/frontend/admin/
+npm install
+npm run build
+
+
+# 清空web根目录文件(因为我这里是新环境)
+rm -rf /usr/share/nginx/html/index.html
+
+# 复制编译完成的前端代码到nginx根目录
+cd /opt/
+
+cp -a blog/frontend/blog/dist/* /usr/share/nginx/html/
+
+cp -a blog/frontend/admin/dist/ /usr/share/nginx/html/admin_config
+
+
+# 备份nginx配置文件
+cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.back
+
+# 创建后端代码及网盘目录
+mkdir -p /usr/local/src/web/netdisk
+
+
+# 复制后端代码到指定目录
+cd /opt/
+cp -a blog/backend/blog /usr/local/src/web/
+
+
+# 后端配置文件目录如下
+# blog/backend/blog/conf
+
+# 替换成生产的配置文件
+sed -i 's/dev_conf/conf/' /usr/local/src/web/blog/util/config.py
+
+# 创建图片上传,音乐,及日志目录
+mkdir /usr/local/src/web/netdisk/upload
+mkdir /usr/local/src/web/netdisk/music
+mkdir /usr/local/src/web/netdisk/log
+
+# 建立web目录链接
+ln -s /usr/local/src/web/netdisk/upload /usr/share/nginx/html/img/upload
+ln -s /usr/local/src/web/netdisk/upload /usr/share/nginx/html/admin_config/img/upload
+ln -s /usr/local/src/web/netdisk/music /usr/share/nginx/html/music
+ln -s /usr/local/src/web/netdisk/music /usr/share/nginx/html/admin_config/music
+
+
+# MySQl 配置
+cat > /etc/my.cnf << "END"
+####################################
+[mysqld]
+default-authentication-plugin=mysql_native_password
+innodb_buffer_pool_size=256M
+join_buffer_size=128M
+sort_buffer_size=16M
+read_rnd_buffer_size=16M
+datadir=/var/lib/mysql
+socket=/var/lib/mysql/mysql.sock
+log-error=/var/lib/mysql/mysqld_error.log
+pid-file=/var/lib/mysql//mysqld.pid
+####################################
+END
+
+
+# MySQl 初始化
+mysqld --initialize-insecure --user=mysql
+
+# 启动mysql
+systemctl restart mysqld.service
+
+mysql -u root
+
+ALTER USER 'root'@'localhost' IDENTIFIED BY 'mima';
+create user 'root'@'%' identified by 'mima';
+GRANT ALL ON *.* TO 'root'@'%';
+ALTER USER `root`@`%` PASSWORD EXPIRE NEVER;
+GRANT Grant Option ON *.* TO `root`@`%`;
+flush privileges;
+CREATE DATABASE `mydb` DEFAULT CHARACTER SET utf8mb4 COLLATE 'utf8mb4_0900_as_cs';
+
+
+# 数据库初始化
+cd /usr/local/src/web/blog/
+python3.8 model/dbinit.py
+
+
+# 创建systemd启动脚本
+cat > /usr/lib/systemd/system/blog.service  << "END" 
+####################################
+[Unit]
+Description=Blog_API_service
+After=network.target
+Requires=redis.service mysqld.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/python3.8 /usr/local/src/web/blog/main.py > /tmp/tornado
+
+[Install]
+WantedBy=multi-user.target
+####################################
+END
+
+# 启动blog服务
+systemctl restart blog.service
+
+
+# 创建证书存放目录
+mkdir /etc/nginx/ssl
+
+# 上传证书文件到/etc/nginx/ssl 目录
+
+# 修改nginx 配置文件
+cat > /etc/nginx/nginx.conf  << "END" 
+####################################
+####################################
+user nginx;
+worker_processes auto;
+error_log /var/log/nginx/error.log;
+pid /run/nginx.pid;
+
+load_module "/usr/lib64/nginx/modules/ngx_http_image_filter_module.so";
+load_module "/usr/lib64/nginx/modules/ngx_http_perl_module.so";
+load_module "/usr/lib64/nginx/modules/ngx_http_xslt_filter_module.so";
+load_module "/usr/lib64/nginx/modules/ngx_mail_module.so";
+load_module "/usr/lib64/nginx/modules/ngx_stream_module.so";
+
+events {
+    worker_connections 2048;
+}
+
+http {
+    log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                      '$status $body_bytes_sent "$http_referer" '
+                      '"$http_user_agent" "$http_x_forwarded_for"';
+
+    access_log  /var/log/nginx/access.log  main;
+
+    sendfile            on;
+    tcp_nopush          on;
+    tcp_nodelay         on;
+    keepalive_timeout   65;
+    keepalive_requests 100;
+    #types_hash_max_size 2048;
+
+    client_max_body_size 256m;
+    #client_header_buffer_size 256m;
+    #large_client_header_buffers 4 256m;
+    #proxy_ignore_client_abort on;
+
+    include             /etc/nginx/mime.types;
+    default_type        application/octet-stream;
+
+    server {
+        listen       80;
+        server_name www.huangrui.vip;
+        rewrite ^ https://$http_host$request_uri? permanent;
+
+        # location ^~ /api/ {
+        #     proxy_pass http://127.0.0.1:8899;
+        #     proxy_pass_header Server;
+        #     proxy_http_version 1.1;
+        #     proxy_redirect off;
+
+        #     #proxy_set_header Host $http_host;
+        #     proxy_set_header Host $host;
+        #     proxy_set_header X-Real-IP $remote_addr;
+        #     proxy_set_header X-Scheme $scheme;
+        #     proxy_set_header Upgrade $http_upgrade;
+        #     proxy_set_header Connection "upgrade";
+        #     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+        #     proxy_connect_timeout 60s;
+        #     proxy_read_timeout 120s;
+        #     proxy_send_timeout 120s;
+        #     client_body_timeout 60s;
+        # }
+        # location / {
+        #     index  index.html;
+        #     expires 30d;
+        # }
+    }
+
+    server {
+        listen  443 ssl http2;
+        #listen  443 ssl;
+        server_name  www.huangrui.vip;
+        index index.html;
+        root  /usr/share/nginx/html;
+
+        ssl on;
+        ssl_certificate /etc/nginx/ssl/pem.pem;
+        ssl_certificate_key /etc/nginx/ssl/key.key;
+
+        location ^~ /api/ {
+            proxy_pass http://127.0.0.1:8899;
+            proxy_pass_header Server;
+            proxy_http_version 1.1; 
+            proxy_redirect off;
+
+            #proxy_set_header Host $http_host;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Scheme $scheme;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+            proxy_connect_timeout 60s;
+            proxy_read_timeout 120s;
+            proxy_send_timeout 120s;
+            client_body_timeout 60s;
+        }
+        location / {
+            index  index.html;
+            expires 30d;
+        }
+        error_page 404 /404.html;
+        location = /40x.html {
+        }
+        error_page 500 502 503 504 /50x.html;
+        location = /50x.html {
+        }
+    }
+}
+####################################
+####################################
+END
+
+# 测试配置文件
+nginx -t
+
+# 重启nginx 服务
+systemctl restart nginx.service
+
+
+#开启常用服务
+systemctl enable mysqld.service 
+systemctl enable redis.service 
+systemctl enable nginx.service
+systemctl enable blog.service
+
+
+# 打开管理页面,开始使用吧
+https://IP/admin_config
+
+默认用户名:admin
+默认密码：123456
+
+
+
+
+
+
+
+
+
